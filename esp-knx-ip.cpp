@@ -6,7 +6,21 @@
 
 #include "esp-knx-ip.h"
 
-ESPKNXIP::ESPKNXIP() : server(nullptr), registered_callback_assignments(0), registered_callbacks(0), registered_configs(0), registered_feedbacks(0)
+char const *string_defaults[] =
+{
+  "Do this",
+  "True",
+  "False",
+  ""
+};
+
+ESPKNXIP::ESPKNXIP() : 
+                      registered_callback_assignments(0),
+                      free_callback_assignment_slots(0),
+                      registered_callbacks(0),
+                      free_callback_slots(0),
+                      registered_configs(0),
+                      registered_feedbacks(0)
 {
   DEBUG_PRINTLN();
   DEBUG_PRINTLN("ESPKNXIP starting up");
@@ -27,62 +41,19 @@ void ESPKNXIP::load()
   restore_from_eeprom();
 }
 
-void ESPKNXIP::start(ESP8266WebServer *srv)
-{
-  server = srv;
-  __start();
-}
-
 void ESPKNXIP::start()
 {
-  server = new ESP8266WebServer(80);
   __start();
 }
 
 void ESPKNXIP::__start()
 {
-  if (server != nullptr)
-  {
-    server->on(ROOT_PREFIX, [this](){
-      __handle_root();
-    });
-    server->on(__ROOT_PATH, [this](){
-      __handle_root();
-    });
-    server->on(__REGISTER_PATH, [this](){
-      __handle_register();
-    });
-    server->on(__DELETE_PATH, [this](){
-      __handle_delete();
-    });
-    server->on(__PHYS_PATH, [this](){
-      __handle_set();
-    });
-#if !DISABLE_EEPROM_BUTTONS
-    server->on(__EEPROM_PATH, [this](){
-      __handle_eeprom();
-    });
-#endif
-    server->on(__CONFIG_PATH, [this](){
-      __handle_config();
-    });
-    server->on(__FEEDBACK_PATH, [this](){
-      __handle_feedback();
-    });
-#if !DISABLE_RESTORE_BUTTON
-    server->on(__RESTORE_PATH, [this](){
-      __handle_restore();
-    });
-#endif
-#if !DISABLE_REBOOT_BUTTON
-    server->on(__REBOOT_PATH, [this](){
-      __handle_reboot();
-    });
-#endif
-    server->begin();
-  }
-
+  #ifdef ESP8266
   udp.beginMulticast(WiFi.localIP(),  MULTICAST_IP, MULTICAST_PORT);
+  #endif
+  #ifdef ESP32
+  udp.beginMulticast(  MULTICAST_IP, MULTICAST_PORT);
+  #endif
 }
 
 void ESPKNXIP::save_to_eeprom()
@@ -136,6 +107,26 @@ void ESPKNXIP::restore_from_eeprom()
   for (uint8_t i = 0; i < MAX_CALLBACK_ASSIGNMENTS; ++i)
   {
     EEPROM.get(address, callback_assignments[i].address);
+    if (callback_assignments[i].address.value != 0)
+    {
+      // if address is not 0/0/0 then mark slot as used
+      callback_assignments[i].slot_flags |= SLOT_FLAGS_USED;
+      DEBUG_PRINTLN("used slot");
+    }
+    else
+    {
+      // if address is 0/0/0, then we found a free slot, yay!
+      // however, only count those slots, if we have not reached registered_callback_assignments yet
+      if (i < registered_callback_assignments)
+      {
+        DEBUG_PRINTLN("free slot before reaching registered_callback_assignments");
+        free_callback_assignment_slots++;
+      }
+      else
+      {
+        DEBUG_PRINTLN("free slot");
+      }
+    }
     address += sizeof(address_t);
   }
   for (uint8_t i = 0; i < MAX_CALLBACK_ASSIGNMENTS; ++i)
@@ -144,7 +135,7 @@ void ESPKNXIP::restore_from_eeprom()
     address += sizeof(callback_id_t);
   }
   EEPROM.get(address, physaddr);
-  address += sizeof(address_t); 
+  address += sizeof(address_t);
 
   //EEPROM.get(address, custom_config_data);
   //address += sizeof(custom_config_data);
@@ -185,52 +176,107 @@ callback_assignment_id_t ESPKNXIP::__callback_register_assignment(address_t addr
   if (registered_callback_assignments >= MAX_CALLBACK_ASSIGNMENTS)
     return -1;
 
-  callback_assignment_id_t aid = registered_callback_assignments;
+  if (free_callback_assignment_slots == 0)
+  {
+    callback_assignment_id_t aid = registered_callback_assignments;
 
-  callback_assignments[aid].address = address;
-  callback_assignments[aid].callback_id = id;
-  registered_callback_assignments++;
-  return aid;
+    callback_assignments[aid].slot_flags |= SLOT_FLAGS_USED;
+    callback_assignments[aid].address = address;
+    callback_assignments[aid].callback_id = id;
+    registered_callback_assignments++;
+    return aid;
+  }
+  else
+  {
+    // find the free slot
+    for (callback_assignment_id_t aid = 0; aid < registered_callback_assignments; ++aid)
+    {
+      if (callback_assignments[aid].slot_flags & SLOT_FLAGS_USED)
+      {
+        // found a used slot
+        continue;
+      }
+      // and now an empty one
+      callback_assignments[aid].slot_flags |= SLOT_FLAGS_USED;
+      callback_assignments[aid].address = address;
+      callback_assignments[aid].callback_id = id;
+
+      free_callback_assignment_slots--;
+      return id;
+    }
+  }
+  return -1;
 }
 
 void ESPKNXIP::__callback_delete_assignment(callback_assignment_id_t id)
 {
-  if (id >= registered_callback_assignments)
-    return;
+  // TODO this can be optimized if we are deleting the last element
+  //      as then we can decrement registered_callback_assignments
 
-  uint32_t dest_offset = 0;
-  uint32_t src_offset = 0;
-  uint32_t len = 0;
-  if (id == 0)
+  // clear slot and mark it as empty
+  callback_assignments[id].slot_flags = SLOT_FLAGS_EMPTY;
+  callback_assignments[id].address.value = 0;
+  callback_assignments[id].callback_id = 0;
+
+  if (id == registered_callback_assignments - 1)
   {
-    // start of array, so delete first entry
-    src_offset = 1;
-    // registered_ga_callbacks will be 1 in case of only one entry
-    // registered_ga_callbacks will be 2 in case of two entries, etc..
-    // so only copy anything, if there is it at least more then one element
-    len = (registered_callback_assignments - 1);
-  }
-  else if (id == registered_callback_assignments - 1)
-  {
-    // last element, don't do anything, simply decrement counter
+    DEBUG_PRINTLN("last cba deleted");
+    // If this is the last callback, we can delete it by decrementing registered_callbacks.
+    registered_callback_assignments--;
+
+    // However, if the assignment before this slot are also empty, we can decrement even further
+    // First check if this was also the first element
+    if (id == 0)
+    {
+      DEBUG_PRINTLN("really last cba");
+      // If this was the last, then we are done.
+      return;
+    }
+
+    id--;
+    while(true)
+    {
+      DEBUG_PRINT("checking ");
+      DEBUG_PRINTLN((int32_t)id);
+      if ((callback_assignments[id].slot_flags & SLOT_FLAGS_USED) == 0)
+      {
+        DEBUG_PRINTLN("merged free slot");
+        // Slot before is empty
+        free_callback_assignment_slots--;
+        registered_callback_assignments--;
+      }
+      else
+      {
+        DEBUG_PRINTLN("aborted on used slot");
+        // Slot is used, abort
+        return;
+      }
+      id--;
+      if (id == CALLBACK_ASSIGNMENT_ID_MAX)
+      {
+        DEBUG_PRINTLN("abort on wrap");
+        // Wrap around, abort
+        return;
+      }
+    }
   }
   else
   {
-    // somewhere in the middle
-    // need to calc offsets
-
-    // skip all prev elements
-    dest_offset = id; // id is equal to how many element are in front of it
-    src_offset = dest_offset + 1; // start after the current element
-    len = (registered_callback_assignments - 1 - id);
+    DEBUG_PRINTLN("free slot created");
+    // there is now one more free slot
+    free_callback_assignment_slots++;
   }
+}
 
-  if (len > 0)
-  {
-    memmove(callback_assignments + dest_offset, callback_assignments + src_offset, len * sizeof(callback_assignment_t));
-  }
+bool ESPKNXIP::__callback_is_id_valid(callback_id_t id)
+{
+  if (id < registered_callbacks)
+    return true;
 
-  registered_callback_assignments--;
+  if (callbacks[id].slot_flags & SLOT_FLAGS_USED)
+    return true;
+
+  return false;
 }
 
 callback_id_t ESPKNXIP::callback_register(String name, callback_fptr_t cb, void *arg, enable_condition_t cond)
@@ -238,22 +284,109 @@ callback_id_t ESPKNXIP::callback_register(String name, callback_fptr_t cb, void 
   if (registered_callbacks >= MAX_CALLBACKS)
     return -1;
 
-  callback_id_t id = registered_callbacks;
+  if (free_callback_slots == 0)
+  {
+    callback_id_t id = registered_callbacks;
 
-  callbacks[id].name = name;
-  callbacks[id].fkt = cb;
-  callbacks[id].cond = cond;
-  callbacks[id].arg = arg;
-  registered_callbacks++;
-  return id;
+    callbacks[id].slot_flags |= SLOT_FLAGS_USED;
+    callbacks[id].name = name;
+    callbacks[id].fkt = cb;
+    callbacks[id].cond = cond;
+    callbacks[id].arg = arg;
+    registered_callbacks++;
+    return id;
+  }
+  else
+  {
+    // find the free slot
+    for (callback_id_t id = 0; id < registered_callbacks; ++id)
+    {
+      if (callbacks[id].slot_flags & SLOT_FLAGS_USED)
+      {
+        // found a used slot
+        continue;
+      }
+      // and now an empty one
+      callbacks[id].slot_flags |= SLOT_FLAGS_USED;
+      callbacks[id].name = name;
+      callbacks[id].fkt = cb;
+      callbacks[id].cond = cond;
+      callbacks[id].arg = arg;
+
+      free_callback_slots--;
+      return id;
+    }
+  }
+  return -1;
 }
 
-void ESPKNXIP::callback_assign(callback_id_t id, address_t val)
+void ESPKNXIP::callback_deregister(callback_id_t id)
 {
-  if (id >= registered_callbacks)
+  if (!__callback_is_id_valid(id))
     return;
 
-  __callback_register_assignment(val, id);
+  // clear slot and mark it as empty
+  callbacks[id].slot_flags = SLOT_FLAGS_EMPTY;
+  callbacks[id].fkt = nullptr;
+  callbacks[id].cond = nullptr;
+  callbacks[id].arg = nullptr;
+
+  if (id == registered_callbacks - 1)
+  {
+    // If this is the last callback, we can delete it by decrementing registered_callbacks.
+    registered_callbacks--;
+
+    // However, if the callbacks before this slot are also empty, we can decrement even further
+    // First check if this was also the first element
+    if (id == 0)
+    {
+      // If this was the last, then we are done.
+      return;
+    }
+
+    id--;
+    while(true)
+    {
+      if ((callbacks[id].slot_flags & SLOT_FLAGS_USED) == 0)
+      {
+        // Slot is empty
+        free_callback_slots--;
+        registered_callbacks--;
+      }
+      else
+      {
+        // Slot is used, abort
+        return;
+      }
+      id--;
+      if (id == CALLBACK_ASSIGNMENT_ID_MAX)
+      {
+        // Wrap around, abort
+        return;
+      }
+    }
+  }
+  else
+  {
+    // there is now one more free slot
+    free_callback_slots++;
+  }
+}
+
+callback_assignment_id_t ESPKNXIP::callback_assign(callback_id_t id, address_t val)
+{
+  if (!__callback_is_id_valid(id))
+    return -1;
+
+  return __callback_register_assignment(val, id);
+}
+
+void ESPKNXIP::callback_unassign(callback_assignment_id_t id)
+{
+  if (!__callback_is_id_valid(id))
+    return;
+
+  __callback_delete_assignment(id);
 }
 
 /**
@@ -277,7 +410,7 @@ feedback_id_t ESPKNXIP::feedback_register_int(String name, int32_t *value, enabl
   return id;
 }
 
-feedback_id_t ESPKNXIP::feedback_register_float(String name, float *value, uint8_t precision, enable_condition_t cond)
+feedback_id_t ESPKNXIP::feedback_register_float(String name, float *value, uint8_t precision, char const *prefix, char const *suffix, enable_condition_t cond)
 {
   if (registered_feedbacks >= MAX_FEEDBACKS)
     return -1;
@@ -289,13 +422,15 @@ feedback_id_t ESPKNXIP::feedback_register_float(String name, float *value, uint8
   feedbacks[id].cond = cond;
   feedbacks[id].data = (void *)value;
   feedbacks[id].options.float_options.precision = precision;
+  feedbacks[id].options.float_options.prefix = prefix ? strdup(prefix) : STRING_DEFAULT_EMPTY;
+  feedbacks[id].options.float_options.suffix = suffix ? strdup(suffix) : STRING_DEFAULT_EMPTY;
 
   registered_feedbacks++;
 
   return id;
 }
 
-feedback_id_t ESPKNXIP::feedback_register_bool(String name, bool *value, enable_condition_t cond)
+feedback_id_t ESPKNXIP::feedback_register_bool(String name, bool *value, char const *true_text, char const *false_text, enable_condition_t cond)
 {
   if (registered_feedbacks >= MAX_FEEDBACKS)
     return -1;
@@ -306,13 +441,15 @@ feedback_id_t ESPKNXIP::feedback_register_bool(String name, bool *value, enable_
   feedbacks[id].name = name;
   feedbacks[id].cond = cond;
   feedbacks[id].data = (void *)value;
+  feedbacks[id].options.bool_options.true_text = true_text ? strdup(true_text) : STRING_DEFAULT_TRUE;
+  feedbacks[id].options.bool_options.false_text = false_text ? strdup(false_text) : STRING_DEFAULT_FALSE;
 
   registered_feedbacks++;
 
   return id;
 }
 
-feedback_id_t ESPKNXIP::feedback_register_action(String name, feedback_action_fptr_t value, void *arg, enable_condition_t cond)
+feedback_id_t ESPKNXIP::feedback_register_action(String name, feedback_action_fptr_t value, const char *btn_text, void *arg, enable_condition_t cond)
 {
   if (registered_feedbacks >= MAX_FEEDBACKS)
     return -1;
@@ -324,6 +461,7 @@ feedback_id_t ESPKNXIP::feedback_register_action(String name, feedback_action_fp
   feedbacks[id].cond = cond;
   feedbacks[id].data = (void *)value;
   feedbacks[id].options.action_options.arg = arg;
+  feedbacks[id].options.action_options.btn_text = btn_text ? strdup(btn_text) : STRING_DEFAULT_DO_THIS;
 
   registered_feedbacks++;
 
@@ -333,20 +471,14 @@ feedback_id_t ESPKNXIP::feedback_register_action(String name, feedback_action_fp
 void ESPKNXIP::loop()
 {
   __loop_knx();
-  if (server != nullptr)
-  {
-    __loop_webserver();
-  }
+ 
 }
 
-void ESPKNXIP::__loop_webserver()
-{
-  server->handleClient();
-}
 
 void ESPKNXIP::__loop_knx()
 {
   int read = udp.parsePacket();
+
   if (!read)
   {
     return;
@@ -356,16 +488,21 @@ void ESPKNXIP::__loop_knx()
   DEBUG_PRINTLN(read);
 
   uint8_t buf[read];
-
   udp.read(buf, read);
-  udp.flush();
 
   DEBUG_PRINT(F("Got packet:"));
+
+#ifdef ESP_KNX_DEBUG
+
   for (int i = 0; i < read; ++i)
+
   {
     DEBUG_PRINT(F(" 0x"));
     DEBUG_PRINT(buf[i], 16);
   }
+
+#endif
+
   DEBUG_PRINTLN(F(""));
 
   knx_ip_pkt_t *knx_pkt = (knx_ip_pkt_t *)buf;
@@ -425,11 +562,13 @@ void ESPKNXIP::__loop_knx()
   DEBUG_PRINT(F("CT: 0x"));
   DEBUG_PRINTLN(ct, 16);
 
+#ifdef ESP_KNX_DEBUG
   for (int i = 0; i < cemi_data->data_len; ++i)
   {
     DEBUG_PRINT(F(" 0x"));
     DEBUG_PRINT(cemi_data->data[i], 16);
   }
+#endif
 
   DEBUG_PRINTLN(F("=="));
 

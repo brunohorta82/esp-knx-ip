@@ -11,9 +11,10 @@
  */
 
 void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t data_len, uint8_t *data)
-{
+{ 
 	if (receiver.value == 0)
-	return;
+		return;
+
 #if SEND_CHECKSUM
 	uint32_t len = 6 + 2 + 8 + data_len + 1; // knx_pkt + cemi_msg + cemi_service + data + checksum
 #else
@@ -21,7 +22,7 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 #endif
 	DEBUG_PRINT(F("Creating packet with len "));
 	DEBUG_PRINTLN(len)
-	uint8_t buf[len];
+	uint8_t buf[len]{};
 	knx_ip_pkt_t *knx_pkt = (knx_ip_pkt_t *)buf;
 	knx_pkt->header_len = 0x06;
 	knx_pkt->protocol_version = 0x10;
@@ -32,10 +33,11 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 	cemi_msg->additional_info_len = 0;
 	cemi_service_t *cemi_data = &cemi_msg->data.service_information;
 	cemi_data->control_1.bits.confirm = 0;
-	cemi_data->control_1.bits.ack = 0;
+//cemi_data->control_1.bits.ack = 1;
+	cemi_data->control_1.bits.ack = 0; // ask for ACK? 0-no 1-yes
 	cemi_data->control_1.bits.priority = B11;
 	cemi_data->control_1.bits.system_broadcast = 0x01;
-	cemi_data->control_1.bits.repeat = 0x01;
+	cemi_data->control_1.bits.repeat = 0x01; // 0 = repeated telegram, 1 = not repeated telegram
 	cemi_data->control_1.bits.reserved = 0;
 	cemi_data->control_1.bits.frame_type = 0x01;
 	cemi_data->control_2.bits.extended_frame_format = 0x00;
@@ -46,10 +48,13 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 	//cemi_data->destination.bytes.high = (area << 3) | line;
 	//cemi_data->destination.bytes.low = member;
 	cemi_data->data_len = data_len;
-	cemi_data->pci.apci = (ct & 0x0C) >> 2;
-	cemi_data->pci.tpci_seq_number = 0x00; // ???
-	cemi_data->pci.tpci_comm_type = KNX_COT_UDP; // ???
+  cemi_data->pci.apci = (ct & 0x0C) >> 2;
+//cemi_data->pci.apci = KNX_COT_NCD_ACK;
+	cemi_data->pci.tpci_seq_number = 0x00;
+	cemi_data->pci.tpci_comm_type = KNX_COT_UDP; // Type of communication: DATA PACKAGE or CONTROL DATA
+//cemi_data->pci.tpci_comm_type = KNX_COT_NCD; // Type of communication: DATA PACKAGE or CONTROL DATA
 	memcpy(cemi_data->data, data, data_len);
+//cemi_data->data[0] = (cemi_data->data[0] & 0x3F) | ((KNX_COT_NCD_ACK & 0x03) << 6);
 	cemi_data->data[0] = (cemi_data->data[0] & 0x3F) | ((ct & 0x03) << 6);
 
 #if SEND_CHECKSUM
@@ -62,6 +67,7 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 	buf[len - 1] = cs;
 #endif
 
+
 	DEBUG_PRINT(F("Sending packet:"));
 	for (int i = 0; i < len; ++i)
 	{
@@ -70,9 +76,17 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 	}
 	DEBUG_PRINTLN(F(""));
 
+#ifdef ESP8266
 	udp.beginPacketMulticast(MULTICAST_IP, MULTICAST_PORT, WiFi.localIP());
+	#endif
+	#ifdef ESP32
+	if(WiFi.status() != WL_CONNECTED)return;
+	udp.beginMulticastPacket();
+	#endif
 	udp.write(buf, len);
-	udp.endPacket();
+ 	udp.endPacket();
+	delay(1);
+
 }
 
 void ESPKNXIP::send_1bit(address_t const &receiver, knx_command_type_t ct, uint8_t bit)
@@ -174,7 +188,13 @@ void ESPKNXIP::send_4byte_uint(address_t const &receiver, knx_command_type_t ct,
 
 void ESPKNXIP::send_4byte_float(address_t const &receiver, knx_command_type_t ct, float val)
 {
-	uint8_t buf[] = {0x00, ((uint8_t *)&val)[3], ((uint8_t *)&val)[2], ((uint8_t *)&val)[1], ((uint8_t *)&val)[0]};
+	union { float f; uint32_t i; } num;
+    num.f = val;
+	uint8_t buf[] = {0x00,
+	                 (uint8_t)((num.i & 0xFF000000) >> 24),
+	                 (uint8_t)((num.i & 0x00FF0000) >> 16),
+	                 (uint8_t)((num.i & 0x0000FF00) >> 8),
+	                 (uint8_t)((num.i & 0x000000FF) >> 0)};
 	send(receiver, ct, 5, buf);
 }
 

@@ -70,7 +70,7 @@
 #ifndef DEBUG_PRINTER
 #define DEBUG_PRINTER Serial
 #endif
-#define ESP_KNX_DEBUG 1
+
 // Setup debug printing macros.
 #ifdef ESP_KNX_DEBUG
   #define DEBUG_PRINT(...) { DEBUG_PRINTER.print(__VA_ARGS__); }

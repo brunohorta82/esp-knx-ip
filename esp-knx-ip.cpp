@@ -7,26 +7,24 @@
 #include "esp-knx-ip.h"
 
 char const *string_defaults[] =
-{
-  "Do this",
-  "True",
-  "False",
-  ""
-};
+    {
+        "Do this",
+        "True",
+        "False",
+        ""};
 
-ESPKNXIP::ESPKNXIP() : 
-                      registered_callback_assignments(0),
-                      free_callback_assignment_slots(0),
-                      registered_callbacks(0),
-                      free_callback_slots(0),
-                      registered_configs(0),
-                      registered_feedbacks(0)
+ESPKNXIP::ESPKNXIP() : registered_callback_assignments(0),
+                       free_callback_assignment_slots(0),
+                       registered_callbacks(0),
+                       free_callback_slots(0),
+                       registered_configs(0),
+                       registered_feedbacks(0)
 {
   DEBUG_PRINTLN();
   DEBUG_PRINTLN("ESPKNXIP starting up");
   // Default physical address is 1.1.0
-  physaddr.bytes.high = (/*area*/1 << 4) | /*line*/1;
-  physaddr.bytes.low = /*member*/0;
+  physaddr.bytes.high = (/*area*/ 1 << 4) | /*line*/ 1;
+  physaddr.bytes.low = /*member*/ 0;
   memset(callback_assignments, 0, MAX_CALLBACK_ASSIGNMENTS * sizeof(callback_assignment_t));
   memset(callbacks, 0, MAX_CALLBACKS * sizeof(callback_fptr_t));
   memset(custom_config_data, 0, MAX_CONFIG_SPACE * sizeof(uint8_t));
@@ -34,141 +32,28 @@ ESPKNXIP::ESPKNXIP() :
   memset(custom_configs, 0, MAX_CONFIGS * sizeof(config_t));
 }
 
-void ESPKNXIP::load()
-{
-  memcpy(custom_config_default_data, custom_config_data, MAX_CONFIG_SPACE);
-  EEPROM.begin(EEPROM_SIZE);
-  restore_from_eeprom();
-}
-
 void ESPKNXIP::start()
 {
   __start();
 }
-
+void ESPKNXIP::reload()
+{
+  udp.stop();
+  __start();
+}
 void ESPKNXIP::__start()
 {
-  #ifdef ESP8266
-  udp.beginMulticast(WiFi.localIP(),  MULTICAST_IP, MULTICAST_PORT);
-  #endif
-  #ifdef ESP32
-  udp.beginMulticast(  MULTICAST_IP, MULTICAST_PORT);
-  #endif
-}
-
-void ESPKNXIP::save_to_eeprom()
-{
-  uint32_t address = 0;
-  uint64_t magic = EEPROM_MAGIC;
-  EEPROM.put(address, magic);
-  address += sizeof(uint64_t);
-  EEPROM.put(address++, registered_callback_assignments);
-  for (uint8_t i = 0; i < MAX_CALLBACK_ASSIGNMENTS; ++i)
-  {
-    EEPROM.put(address, callback_assignments[i].address);
-    address += sizeof(address_t);
-  }
-  for (uint8_t i = 0; i < MAX_CALLBACK_ASSIGNMENTS; ++i)
-  {
-    EEPROM.put(address, callback_assignments[i].callback_id);
-    address += sizeof(callback_id_t);
-  }
-  EEPROM.put(address, physaddr);
-  address += sizeof(address_t);
-
-  EEPROM.put(address, custom_config_data);
-  address += sizeof(custom_config_data);
-
-  EEPROM.commit();
-  DEBUG_PRINT("Wrote to EEPROM: 0x");
-  DEBUG_PRINTLN(address, HEX);
-}
-
-void ESPKNXIP::restore_from_eeprom()
-{
-  uint32_t address = 0;
-  uint64_t magic = 0;
-  EEPROM.get(address, magic);
-  if (magic != EEPROM_MAGIC)
-  {
-    DEBUG_PRINTLN("No valid magic in EEPROM, aborting restore.");
-    DEBUG_PRINT("Expected 0x");
-    DEBUG_PRINT((unsigned long)(EEPROM_MAGIC >> 32), HEX);
-    DEBUG_PRINT(" 0x");
-    DEBUG_PRINT((unsigned long)(EEPROM_MAGIC), HEX);
-    DEBUG_PRINT(" got 0x");
-    DEBUG_PRINT((unsigned long)(magic >> 32), HEX);
-    DEBUG_PRINT(" 0x");
-    DEBUG_PRINTLN((unsigned long)magic, HEX);
-    return;
-  }
-  address += sizeof(uint64_t);
-  EEPROM.get(address++, registered_callback_assignments);
-  for (uint8_t i = 0; i < MAX_CALLBACK_ASSIGNMENTS; ++i)
-  {
-    EEPROM.get(address, callback_assignments[i].address);
-    if (callback_assignments[i].address.value != 0)
-    {
-      // if address is not 0/0/0 then mark slot as used
-      callback_assignments[i].slot_flags |= SLOT_FLAGS_USED;
-      DEBUG_PRINTLN("used slot");
-    }
-    else
-    {
-      // if address is 0/0/0, then we found a free slot, yay!
-      // however, only count those slots, if we have not reached registered_callback_assignments yet
-      if (i < registered_callback_assignments)
-      {
-        DEBUG_PRINTLN("free slot before reaching registered_callback_assignments");
-        free_callback_assignment_slots++;
-      }
-      else
-      {
-        DEBUG_PRINTLN("free slot");
-      }
-    }
-    address += sizeof(address_t);
-  }
-  for (uint8_t i = 0; i < MAX_CALLBACK_ASSIGNMENTS; ++i)
-  {
-    EEPROM.get(address, callback_assignments[i].callback_id);
-    address += sizeof(callback_id_t);
-  }
-  EEPROM.get(address, physaddr);
-  address += sizeof(address_t);
-
-  //EEPROM.get(address, custom_config_data);
-  //address += sizeof(custom_config_data);
-  uint32_t conf_offset = address;
-  for (uint8_t i = 0; i < registered_configs; ++i)
-  {
-    // First byte is flags.
-    config_flags_t flags = CONFIG_FLAGS_NO_FLAGS;
-    flags = (config_flags_t)EEPROM.read(address);
-    DEBUG_PRINT("Flag in EEPROM @ ");
-    DEBUG_PRINT(address - conf_offset);
-    DEBUG_PRINT(": ");
-    DEBUG_PRINTLN(flags, BIN);
-    custom_config_data[custom_configs[i].offset] = flags;
-    if (flags & CONFIG_FLAGS_VALUE_SET)
-    {
-      DEBUG_PRINTLN("Non-default value");
-      for (int j = 0; j < custom_configs[i].len - sizeof(uint8_t); ++j)
-      {
-        custom_config_data[custom_configs[i].offset + sizeof(uint8_t) + j] = EEPROM.read(address + sizeof(uint8_t) + j);
-      }
-    }
-
-    address += custom_configs[i].len;
-  }
-
-  DEBUG_PRINT("Restored from EEPROM: 0x");
-  DEBUG_PRINTLN(address, HEX);
+#ifdef ESP8266
+  udp.beginMulticast(WiFi.localIP(), MULTICAST_IP, MULTICAST_PORT);
+#endif
+#ifdef ESP32
+  udp.beginMulticast(MULTICAST_IP, MULTICAST_PORT);
+#endif
 }
 
 uint16_t ESPKNXIP::__ntohs(uint16_t n)
 {
-  return (uint16_t)((((uint8_t*)&n)[0] << 8) | (((uint8_t*)&n)[1]));
+  return (uint16_t)((((uint8_t *)&n)[0] << 8) | (((uint8_t *)&n)[1]));
 }
 
 callback_assignment_id_t ESPKNXIP::__callback_register_assignment(address_t address, callback_id_t id)
@@ -234,7 +119,7 @@ void ESPKNXIP::__callback_delete_assignment(callback_assignment_id_t id)
     }
 
     id--;
-    while(true)
+    while (true)
     {
       DEBUG_PRINT("checking ");
       DEBUG_PRINTLN((int32_t)id);
@@ -345,7 +230,7 @@ void ESPKNXIP::callback_deregister(callback_id_t id)
     }
 
     id--;
-    while(true)
+    while (true)
     {
       if ((callbacks[id].slot_flags & SLOT_FLAGS_USED) == 0)
       {
@@ -471,9 +356,7 @@ feedback_id_t ESPKNXIP::feedback_register_action(String name, feedback_action_fp
 void ESPKNXIP::loop()
 {
   __loop_knx();
- 
 }
-
 
 void ESPKNXIP::__loop_knx()
 {

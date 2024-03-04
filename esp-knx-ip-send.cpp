@@ -11,7 +11,7 @@
  */
 
 void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t data_len, uint8_t *data)
-{ 
+{
 	if (receiver.value == 0)
 		return;
 
@@ -33,7 +33,7 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 	cemi_msg->additional_info_len = 0;
 	cemi_service_t *cemi_data = &cemi_msg->data.service_information;
 	cemi_data->control_1.bits.confirm = 0;
-//cemi_data->control_1.bits.ack = 1;
+	// cemi_data->control_1.bits.ack = 1;
 	cemi_data->control_1.bits.ack = 0; // ask for ACK? 0-no 1-yes
 	cemi_data->control_1.bits.priority = B11;
 	cemi_data->control_1.bits.system_broadcast = 0x01;
@@ -45,16 +45,16 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 	cemi_data->control_2.bits.dest_addr_type = 0x01;
 	cemi_data->source = physaddr;
 	cemi_data->destination = receiver;
-	//cemi_data->destination.bytes.high = (area << 3) | line;
-	//cemi_data->destination.bytes.low = member;
+	// cemi_data->destination.bytes.high = (area << 3) | line;
+	// cemi_data->destination.bytes.low = member;
 	cemi_data->data_len = data_len;
-  cemi_data->pci.apci = (ct & 0x0C) >> 2;
-//cemi_data->pci.apci = KNX_COT_NCD_ACK;
+	cemi_data->pci.apci = (ct & 0x0C) >> 2;
+	// cemi_data->pci.apci = KNX_COT_NCD_ACK;
 	cemi_data->pci.tpci_seq_number = 0x00;
 	cemi_data->pci.tpci_comm_type = KNX_COT_UDP; // Type of communication: DATA PACKAGE or CONTROL DATA
-//cemi_data->pci.tpci_comm_type = KNX_COT_NCD; // Type of communication: DATA PACKAGE or CONTROL DATA
+												 // cemi_data->pci.tpci_comm_type = KNX_COT_NCD; // Type of communication: DATA PACKAGE or CONTROL DATA
 	memcpy(cemi_data->data, data, data_len);
-//cemi_data->data[0] = (cemi_data->data[0] & 0x3F) | ((KNX_COT_NCD_ACK & 0x03) << 6);
+	// cemi_data->data[0] = (cemi_data->data[0] & 0x3F) | ((KNX_COT_NCD_ACK & 0x03) << 6);
 	cemi_data->data[0] = (cemi_data->data[0] & 0x3F) | ((ct & 0x03) << 6);
 
 #if SEND_CHECKSUM
@@ -67,9 +67,8 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 	buf[len - 1] = cs;
 #endif
 
-
 	DEBUG_PRINT(F("Sending packet:"));
-	for (int i = 0; i < len; ++i)
+	for (uint32 i = 0; i < len; ++i)
 	{
 		DEBUG_PRINT(F(" 0x"));
 		DEBUG_PRINT(buf[i], 16);
@@ -78,15 +77,15 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 
 #ifdef ESP8266
 	udp.beginPacketMulticast(MULTICAST_IP, MULTICAST_PORT, WiFi.localIP());
-	#endif
-	#ifdef ESP32
-	if(WiFi.status() != WL_CONNECTED)return;
+#endif
+#ifdef ESP32
+	if (WiFi.status() != WL_CONNECTED)
+		return;
 	udp.beginMulticastPacket();
-	#endif
+#endif
 	udp.write(buf, len);
- 	udp.endPacket();
+	udp.endPacket();
 	delay(1);
-
 }
 
 void ESPKNXIP::send_1bit(address_t const &receiver, knx_command_type_t ct, uint8_t bit)
@@ -136,13 +135,13 @@ void ESPKNXIP::send_2byte_float(address_t const &receiver, knx_command_type_t ct
 	float v = val * 100.0f;
 	int e = 0;
 	for (; v < -2048.0f; v /= 2)
-	++e;
+		++e;
 	for (; v > 2047.0f; v /= 2)
-	++e;
+		++e;
 	long m = (long)round(v) & 0x7FF;
-	short msb = (short) (e << 3 | m >> 8);
+	short msb = (short)(e << 3 | m >> 8);
 	if (val < 0.0f)
-	msb |= 0x80;
+		msb |= 0x80;
 	uint8_t buf[] = {0x00, (uint8_t)msb, (uint8_t)m};
 	send(receiver, ct, 3, buf);
 }
@@ -169,32 +168,36 @@ void ESPKNXIP::send_3byte_color(address_t const &receiver, knx_command_type_t ct
 void ESPKNXIP::send_4byte_int(address_t const &receiver, knx_command_type_t ct, int32_t val)
 {
 	uint8_t buf[] = {0x00,
-	                 (uint8_t)((val & 0xFF000000) >> 24),
-	                 (uint8_t)((val & 0x00FF0000) >> 16),
-	                 (uint8_t)((val & 0x0000FF00) >> 8),
-	                 (uint8_t)((val & 0x000000FF) >> 0)};
+					 (uint8_t)((val & 0xFF000000) >> 24),
+					 (uint8_t)((val & 0x00FF0000) >> 16),
+					 (uint8_t)((val & 0x0000FF00) >> 8),
+					 (uint8_t)((val & 0x000000FF) >> 0)};
 	send(receiver, ct, 5, buf);
 }
 
 void ESPKNXIP::send_4byte_uint(address_t const &receiver, knx_command_type_t ct, uint32_t val)
 {
 	uint8_t buf[] = {0x00,
-	                 (uint8_t)((val & 0xFF000000) >> 24),
-	                 (uint8_t)((val & 0x00FF0000) >> 16),
-	                 (uint8_t)((val & 0x0000FF00) >> 8),
-	                 (uint8_t)((val & 0x000000FF) >> 0)};
+					 (uint8_t)((val & 0xFF000000) >> 24),
+					 (uint8_t)((val & 0x00FF0000) >> 16),
+					 (uint8_t)((val & 0x0000FF00) >> 8),
+					 (uint8_t)((val & 0x000000FF) >> 0)};
 	send(receiver, ct, 5, buf);
 }
 
 void ESPKNXIP::send_4byte_float(address_t const &receiver, knx_command_type_t ct, float val)
 {
-	union { float f; uint32_t i; } num;
-    num.f = val;
+	union
+	{
+		float f;
+		uint32_t i;
+	} num;
+	num.f = val;
 	uint8_t buf[] = {0x00,
-	                 (uint8_t)((num.i & 0xFF000000) >> 24),
-	                 (uint8_t)((num.i & 0x00FF0000) >> 16),
-	                 (uint8_t)((num.i & 0x0000FF00) >> 8),
-	                 (uint8_t)((num.i & 0x000000FF) >> 0)};
+					 (uint8_t)((num.i & 0xFF000000) >> 24),
+					 (uint8_t)((num.i & 0x00FF0000) >> 16),
+					 (uint8_t)((num.i & 0x0000FF00) >> 8),
+					 (uint8_t)((num.i & 0x000000FF) >> 0)};
 	send(receiver, ct, 5, buf);
 }
 
@@ -208,6 +211,6 @@ void ESPKNXIP::send_14byte_string(address_t const &receiver, knx_command_type_t 
 	{
 		len = 14;
 	}
-	memcpy(buf+1, val, len);
+	memcpy(buf + 1, val, len);
 	send(receiver, ct, 15, buf);
 }

@@ -68,7 +68,7 @@ void ESPKNXIP::send(address_t const &receiver, knx_command_type_t ct, uint8_t da
 #endif
 
 	DEBUG_PRINT(F("Sending packet:"));
-	for (uint32 i = 0; i < len; ++i)
+	for (uint32_t i = 0; i < len; ++i)
 	{
 		DEBUG_PRINT(F(" 0x"));
 		DEBUG_PRINT(buf[i], 16);
